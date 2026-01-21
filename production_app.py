@@ -8,6 +8,49 @@ from datetime import datetime, date, timedelta
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Blaze Factory Control", layout="wide", page_icon="🏭")
 
+# --- 🎨 BLAZE PRO THEME (CUSTOM CSS) ---
+st.markdown("""
+    <style>
+    /* 1. Main Background and Text */
+    .main {
+        background-color: #FFFFFF;
+    }
+    
+    /* 2. Header Colors (Blaze Red) */
+    h1, h2, h3 {
+        color: #D32F2F !important;
+        font-family: 'Arial', sans-serif;
+    }
+    
+    /* 3. Metric Cards (The 4 big boxes at the top) */
+    div[data-testid="stMetric"] {
+        background-color: #F8F9FA; /* Light Grey Background */
+        border: 1px solid #E0E0E0; /* Subtle Border */
+        padding: 15px;
+        border-radius: 10px; /* Rounded Corners */
+        box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1); /* 3D Shadow */
+        text-align: center;
+    }
+    
+    /* 4. Sidebar Styling */
+    section[data-testid="stSidebar"] {
+        background-color: #F0F2F6;
+    }
+    
+    /* 5. Custom Button Styling */
+    div.stButton > button {
+        background-color: #D32F2F;
+        color: white;
+        border-radius: 5px;
+        border: none;
+    }
+    div.stButton > button:hover {
+        background-color: #B71C1C; /* Darker Red on Hover */
+        color: white;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
 # ⚠️ KEEPING YOUR DATA SAFE
 DATA_FILE = "production_data_v29.csv"
 
@@ -65,7 +108,8 @@ def calculate_status(row):
 if 'order_draft' not in st.session_state: st.session_state.order_draft = []
 
 st.sidebar.title("🏭 Blaze Factory")
-st.sidebar.markdown("**System V49 (Search)**")
+st.sidebar.markdown("---")
+st.sidebar.markdown("**System V58 (Pro Theme)**")
 menu = st.sidebar.radio("NAVIGATE", [
     "Dashboard", 
     "Create Order", 
@@ -79,25 +123,85 @@ df = load_data()
 
 # --- 1. DASHBOARD ---
 if menu == "Dashboard":
-    st.header("🏭 Executive Command Center")
+    st.title("🏭 Executive Command Center")
     st.markdown("---")
+    
     if df.empty:
         st.info("System is empty. Go to 'Create Order' to add data.")
     else:
+        # Pre-calculations
         df['Status_Calc'] = df.apply(calculate_status, axis=1)
         df['Total Qty'] = pd.to_numeric(df['Total Qty'], errors='coerce').fillna(0)
         
         active_items = df[~df['Current Stage'].isin(["7- Packing", "8- Shipped"])]
         finished_items = df[df['Current Stage'].isin(["7- Packing", "8- Shipped"])]
         
+        # Prepare lists for later
+        critical_items = active_items[active_items['Status_Calc'].isin(["CRITICAL", "OVERDUE"])]
+        high_pri_items = active_items[active_items['Priority'].isin(["High", "Urgent"])]
+        
+        # Counts
+        urgent_count_num = len(high_pri_items['Order ID'].unique())
+        critical_count_num = len(critical_items['Order ID'].unique())
+
+        # --- SECTION 1: METRICS ROW (TOP) ---
         k1, k2, k3, k4 = st.columns(4)
         k1.metric("📦 Active Orders", len(active_items['Order ID'].unique()))
         k2.metric("👕 Pieces on Floor", f"{int(active_items['Total Qty'].sum()):,}")
         k3.metric("✅ Pieces Finished", f"{int(finished_items['Total Qty'].sum()):,}")
-        urgent_count = len(active_items[active_items['Priority'].isin(["High", "Urgent"])])
-        k4.metric("🔥 High Priority Batches", urgent_count, delta="Act Now", delta_color="inverse")
+        
+        if urgent_count_num > 0: 
+            k4.metric("🔥 High Priority Orders", urgent_count_num, delta="See List Below ⬇️", delta_color="inverse")
+        else: 
+            k4.metric("🔥 High Priority Orders", 0, delta="All Good")
         
         st.markdown("---")
+
+        # --- SECTION 2: DETAILED LISTS (MIDDLE) ---
+        if not critical_items.empty or not high_pri_items.empty:
+            
+            st.subheader("⚠️ Action Center (Attention Required)")
+            
+            c_left, c_right = st.columns(2)
+            
+            # LEFT SIDE: HIGH PRIORITY
+            with c_left:
+                if not high_pri_items.empty:
+                    st.warning(f"🔥 **{urgent_count_num} High Priority Orders**")
+                    pri_summary = high_pri_items.groupby(['Order ID', 'Client', 'Priority'])['Total Qty'].sum().reset_index()
+                    st.dataframe(pri_summary, use_container_width=True, hide_index=True)
+                else:
+                    st.info("ℹ️ No High Priority orders.")
+
+            # RIGHT SIDE: DEADLINES
+            with c_right:
+                if not critical_items.empty:
+                    st.error(f"🚨 **{critical_count_num} Orders Due Soon (< 3 Days)**")
+                    
+                    crit_summary = critical_items.groupby(['Order ID', 'Client', 'Due Date'])['Total Qty'].sum().reset_index()
+                    crit_summary['Due Date'] = crit_summary['Due Date'].dt.date
+                    
+                    # Sort Logic
+                    today = date.today()
+                    def get_sort_key(d): return (d - today).days if isinstance(d, date) else 999
+                    def get_status_label(d):
+                        days = (d - today).days if isinstance(d, date) else 999
+                        if days < 0: return f"⚠️ OVERDUE ({abs(days)} days)"
+                        elif days == 0: return "🚨 DUE TODAY"
+                        elif days == 1: return "🔥 1 Day Left"
+                        else: return f"📅 {days} Days Left"
+
+                    crit_summary['sort_val'] = crit_summary['Due Date'].apply(get_sort_key)
+                    crit_summary = crit_summary.sort_values('sort_val', ascending=True)
+                    crit_summary['Time Left'] = crit_summary['Due Date'].apply(get_status_label)
+                    
+                    st.dataframe(crit_summary[['Time Left', 'Order ID', 'Client', 'Total Qty']], use_container_width=True, hide_index=True)
+                else:
+                    st.success("✅ No critical deadlines.")
+            
+            st.markdown("---")
+
+        # --- SECTION 3: CHARTS (BOTTOM) ---
         c1, c2 = st.columns([3, 2])
         with c1:
             st.subheader("📍 Where is the stock stuck?")
@@ -108,30 +212,29 @@ if menu == "Dashboard":
         with c2:
             st.subheader("👥 Client Workload")
             if not active_items.empty:
-                client_data = active_items.groupby("Client")['Total Qty'].sum().reset_index().sort_values(by="Total Qty", ascending=False)
-                fig_client = px.pie(client_data, values='Total Qty', names='Client', title="Pending Pieces by Client", hole=0.4)
+                client_agg = active_items.groupby("Client").agg({'Total Qty': 'sum', 'Order ID': lambda x: ', '.join(sorted(x.unique()))}).reset_index().sort_values(by="Total Qty", ascending=False)
+                fig_client = px.pie(client_agg, values='Total Qty', names='Client', title="Pending Pieces by Client", hole=0.4, hover_data=['Order ID'])
                 st.plotly_chart(fig_client, use_container_width=True)
 
 # --- 2. CREATE ORDER ---
 elif menu == "Create Order":
     st.header("📝 Create New Order")
     
-    # 1. EXTRACT HISTORY FOR AUTOCOMPLETE
-    existing_clients = sorted(list(df['Client'].unique())) if not df.empty else []
-    existing_products = sorted(list(df['Product Name'].unique())) if not df.empty else []
+    # History
+    existing_clients = sorted([x for x in df['Client'].unique() if x != ""]) if not df.empty else []
+    existing_products = sorted([x for x in df['Product Name'].unique() if x != ""]) if not df.empty else []
+    existing_colors = sorted([x for x in df['Color'].unique() if x != ""]) if not df.empty else []
+    existing_articles = sorted([x for x in df['Article No'].unique() if x != ""]) if not df.empty else []
     
     with st.container():
         c1, c2 = st.columns(2)
         order_id = c1.text_input("Order ID", placeholder="BFW-001")
         
-        # SMART CLIENT SELECTOR
+        # Smart Client
         client_options = ["➕ Type New..."] + existing_clients
         selected_client = c2.selectbox("Client", client_options, index=1 if existing_clients else 0)
-        
-        if selected_client == "➕ Type New...":
-            client = c2.text_input("Enter New Client Name", placeholder="e.g. Nike")
-        else:
-            client = selected_client
+        if selected_client == "➕ Type New...": client = c2.text_input("Enter New Client Name", placeholder="e.g. Nike")
+        else: client = selected_client
 
     is_duplicate = False
     if order_id:
@@ -147,17 +250,24 @@ elif menu == "Create Order":
     with st.container():
         c4, c5, c6, c7 = st.columns(4)
         
-        # SMART PRODUCT SELECTOR
+        # Smart Product
         prod_options = ["➕ Type New..."] + existing_products
         selected_prod = c4.selectbox("Product", prod_options, index=1 if existing_products else 0)
-        
-        if selected_prod == "➕ Type New...":
-            p_name = c4.text_input("Enter Product Name", placeholder="Hoodie")
-        else:
-            p_name = selected_prod
+        if selected_prod == "➕ Type New...": p_name = c4.text_input("Enter Product Name", placeholder="Hoodie")
+        else: p_name = selected_prod
             
-        p_color = c5.text_input("Color", placeholder="e.g. Black")
-        art_no = c6.text_input("Article No", placeholder="HD-X")
+        # Smart Color
+        col_options = ["➕ Type New..."] + existing_colors
+        selected_col = c5.selectbox("Color", col_options, index=1 if existing_colors else 0)
+        if selected_col == "➕ Type New...": p_color = c5.text_input("Enter New Color", placeholder="e.g. Black")
+        else: p_color = selected_col
+
+        # Smart Article
+        art_options = ["➕ Type New..."] + existing_articles
+        selected_art = c6.selectbox("Article No", art_options, index=1 if existing_articles else 0)
+        if selected_art == "➕ Type New...": art_no = c6.text_input("Enter New Article No", placeholder="HD-X")
+        else: art_no = selected_art
+
         p_due_date = c7.date_input("Item Deadline", min_value=date.today(), value=date.today() + timedelta(days=14))
         
         inputs = {}
@@ -165,44 +275,32 @@ elif menu == "Create Order":
         y_cols = st.columns(5)
         youth_sizes = ["YXS", "YS", "YM", "YL", "YXL"]
         for i, size in enumerate(youth_sizes): inputs[size] = y_cols[i].number_input(size, min_value=0, key=f"y_{i}")
-        
         st.write("###### Adult Sizes")
         a_cols = st.columns(8)
         adult_sizes = ["XS", "S", "M", "L", "XL", "2XL", "3XL", "Other"]
         for i, size in enumerate(adult_sizes): inputs[size] = a_cols[i].number_input(size, min_value=0, key=f"a_{i}")
         
         current_total = sum(inputs.values())
-        if current_total > 0:
-            st.info(f"📊 **Total for this Product:** {current_total} pcs")
-        else:
-            st.caption("Enter sizes to see total.")
+        if current_total > 0: st.info(f"📊 **Total for this Product:** {current_total} pcs")
+        else: st.caption("Enter sizes to see total.")
 
-        # --- ADD TO LIST ---
         if st.button("Add to List ⬇️", disabled=is_duplicate):
-            if is_duplicate:
-                st.error("Cannot add items. Change Order ID first.")
+            if is_duplicate: st.error("Cannot add items. Change Order ID first.")
             elif p_name and current_total > 0:
-                # 1. Check duplicate in draft
-                new_item_check = {
-                    "Product Name": p_name, "Color": p_color if p_color else "Std",
-                    "Article No": art_no, "Total Qty": current_total
-                }
                 is_in_list = False
+                check_color = p_color if p_color else "Std"
+                
                 for item in st.session_state.order_draft:
-                    if (item['Product Name'] == new_item_check['Product Name'] and 
-                        item['Color'] == new_item_check['Color'] and
-                        item['Article No'] == new_item_check['Article No'] and
-                        item['Total Qty'] == new_item_check['Total Qty']):
-                        is_in_list = True
-                        break
+                    if (item['Product Name'] == p_name and item['Color'] == check_color and item['Article No'] == art_no):
+                        is_in_list = True; break
                 
                 if is_in_list:
-                    st.warning("⚠️ This item is already in your list! (Duplicate Blocked)")
+                    st.warning("⚠️ This item (Product + Color + Article) is already in your list! (Duplicate Blocked)")
                 else:
                     for size, qty in inputs.items():
                         if qty > 0:
                             st.session_state.order_draft.append({
-                                "Product Name": p_name, "Color": p_color if p_color else "Std", "Article No": art_no, 
+                                "Product Name": p_name, "Color": check_color, "Article No": art_no, 
                                 "Size Variant": size, "Total Qty": qty, "Due Date": p_due_date, "Notes": ""
                             })
                     st.success(f"Added {p_name} ({current_total} pcs)")
@@ -213,8 +311,7 @@ elif menu == "Create Order":
         draft_df = pd.DataFrame(st.session_state.order_draft)
         edited_draft_df = st.data_editor(draft_df, num_rows="dynamic", use_container_width=True, key="draft_editor", column_config={"Due Date": st.column_config.DateColumn("Deadline", format="YYYY-MM-DD")})
         
-        if is_duplicate:
-            st.warning("⚠️ You cannot save this order because the Order ID already exists.")
+        if is_duplicate: st.warning("⚠️ You cannot save this order because the Order ID already exists.")
         else:
             if st.button("✅ SAVE FINAL ORDER"):
                 if edited_draft_df.empty: st.error("List is empty!")
@@ -246,7 +343,6 @@ elif menu == "👁️ ORDER DASHBOARD":
             if not order_data.empty:
                 client_name = order_data.iloc[0]['Client']
                 
-                # Metrics
                 order_data['Total Qty'] = pd.to_numeric(order_data['Total Qty'], errors='coerce').fillna(0)
                 total_target = order_data['Total Qty'].sum()
                 completed_items = order_data[order_data['Current Stage'].isin(["7- Packing", "8- Shipped"])]
@@ -255,19 +351,16 @@ elif menu == "👁️ ORDER DASHBOARD":
                 if pending_qty < 0: pending_qty = 0
                 prog_pct = completed_qty / total_target if total_target > 0 else 0
                 
-                # Deadline Logic
                 active_only = order_data[order_data['Current Stage'] != "8- Shipped"]
                 if active_only.empty: dates_list = order_data['Due Date'].unique()
                 else: dates_list = active_only['Due Date'].unique()
 
                 try:
-                    # Convert timestamps to dates for comparison
                     valid_dates = []
                     for d in dates_list:
                         if pd.isna(d): continue
                         if isinstance(d, pd.Timestamp): valid_dates.append(d.date())
                         else: valid_dates.append(d)
-                    
                     if valid_dates:
                         next_deadline = min(valid_dates)
                         days_left = (next_deadline - date.today()).days
@@ -277,7 +370,6 @@ elif menu == "👁️ ORDER DASHBOARD":
                     else: time_msg = "No Date"; time_color = "gray"
                 except: time_msg = "Error"; time_color = "gray"
 
-                # Header
                 st.markdown(f"""
                 <div style="background-color:#f0f2f6; padding:20px; border-radius:10px; border-left: 8px solid {time_color};">
                     <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -297,7 +389,6 @@ elif menu == "👁️ ORDER DASHBOARD":
 
                 st.markdown("---")
 
-                # Metrics Row
                 c1, c2 = st.columns([2, 1])
                 with c1:
                     st.write("#### 📊 Progress Metrics")
@@ -315,7 +406,6 @@ elif menu == "👁️ ORDER DASHBOARD":
 
                 st.markdown("---")
                 
-                # Action Center
                 st.subheader("🛠️ Update Production Stage")
                 order_data['Display_Name'] = order_data['Product Name'].astype(str) + " (" + order_data['Color'].astype(str) + ")"
                 products = order_data['Display_Name'].unique()
@@ -324,8 +414,6 @@ elif menu == "👁️ ORDER DASHBOARD":
                 for i, p_display in enumerate(products):
                     with tabs[i]:
                         prod_df = order_data[order_data['Display_Name'] == p_display]
-                        
-                        # Matrix
                         st.subheader(f"📊 Matrix: {p_display}")
                         matrix_rows = []
                         for _, row in prod_df.iterrows():
@@ -337,7 +425,6 @@ elif menu == "👁️ ORDER DASHBOARD":
                         if len(matrix_rows) > 0: st.dataframe(pd.DataFrame(matrix_rows).drop(columns=["Batch ID"]), use_container_width=True)
                         st.markdown("---")
                         
-                        # Bulk Action
                         st.subheader("🚀 Bulk Action")
                         active_prod_df = prod_df[prod_df['Current Stage'] != "8- Shipped"]
                         if not active_prod_df.empty:
@@ -349,7 +436,6 @@ elif menu == "👁️ ORDER DASHBOARD":
                                 save_data(df); st.success(f"Moved {len(ids_to_move)} batches!"); st.rerun()
                         else: st.success("All items shipped! ✅")
 
-                        # Individual Action
                         st.markdown("---")
                         st.subheader("🛠️ Individual Actions")
                         show_shipped = st.checkbox("✅ Show Shipped Items", key=f"show_ship_{i}")
@@ -381,23 +467,18 @@ elif menu == "👁️ ORDER DASHBOARD":
                                                 df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
                                             save_data(df); st.success("Updated!"); st.rerun()
 
-# --- 4. MANAGE DATA (WITH SEARCH) ---
+# --- 4. MANAGE DATA ---
 elif menu == "🛠️ MANAGE DATA":
     st.header("🛠️ Data Manager")
     st.info("💡 To DELETE a row: Select it (left click) and press Delete key, or click the Trash icon.")
-    
-    # --- SEARCH BAR ---
     search_query = st.text_input("🔍 Search Data (Order ID or Client):", placeholder="Type to filter...")
     
     if df.empty: st.info("Database is empty.")
     else:
-        # Filter based on search
         if search_query:
-            search_df = df[df['Order ID'].str.contains(search_query, case=False) | 
-                           df['Client'].str.contains(search_query, case=False)]
+            search_df = df[df['Order ID'].str.contains(search_query, case=False) | df['Client'].str.contains(search_query, case=False)]
             unique_orders = search_df['Order ID'].dropna().unique()
-        else:
-            unique_orders = df['Order ID'].dropna().unique()
+        else: unique_orders = df['Order ID'].dropna().unique()
             
         for order_id in unique_orders:
             order_data = df[df['Order ID'] == order_id]
@@ -406,7 +487,6 @@ elif menu == "🛠️ MANAGE DATA":
                 prod_list = ", ".join(order_data['Product Name'].unique())
                 
                 with st.expander(f"📝 {order_id} | {client} | {prod_list}"):
-                    # Bulk Date
                     st.markdown("#### 📅 Update Whole Order Deadline")
                     c_date1, c_date2 = st.columns([2, 1])
                     new_bulk_date = c_date1.date_input("Select new date:", key=f"bd_{order_id}")
@@ -415,9 +495,7 @@ elif menu == "🛠️ MANAGE DATA":
                         save_data(df); st.success(f"Updated all items in {order_id} to {new_bulk_date}!"); st.rerun()
                     st.markdown("---")
                     
-                    # Ensure Date column is ready for editor
                     order_data['Due Date'] = pd.to_datetime(order_data['Due Date'], errors='coerce')
-
                     edited_batch = st.data_editor(order_data, num_rows="dynamic", use_container_width=True, key=f"edit_{order_id}",
                         column_config={"Unique ID": None, "Current Stage": st.column_config.SelectboxColumn("Stage", options=STAGES, required=True), "Priority": st.column_config.SelectboxColumn("Priority", options=["Normal", "High", "Urgent"], required=True), "Due Date": st.column_config.DateColumn("Due Date", format="YYYY-MM-DD"), "Total Qty": st.column_config.NumberColumn("Qty", min_value=0)})
                     if st.button(f"💾 SAVE CHANGES FOR {order_id}", key=f"save_{order_id}"):
@@ -429,18 +507,13 @@ elif menu == "🛠️ MANAGE DATA":
                             final_rows.append(row)
                         df = pd.concat([df, pd.DataFrame(final_rows)], ignore_index=True); save_data(df); st.success(f"Updated {order_id}!"); st.rerun()
 
-# --- 5. PENDING REPORT (WITH SEARCH) ---
+# --- 5. PENDING REPORT ---
 elif menu == "Pending Report":
     st.header("🚨 Pending Orders Report")
-    
-    # --- SEARCH BAR ---
     search_query = st.text_input("🔍 Search Pending (Order ID or Client):", placeholder="Type to filter...")
-    
     pending_items = df[~df['Current Stage'].isin(["7- Packing", "8- Shipped"])]
-    
     if search_query:
-        pending_items = pending_items[pending_items['Order ID'].str.contains(search_query, case=False) | 
-                                      pending_items['Client'].str.contains(search_query, case=False)]
+        pending_items = pending_items[pending_items['Order ID'].str.contains(search_query, case=False) | pending_items['Client'].str.contains(search_query, case=False)]
     
     if pending_items.empty: st.success("🎉 No pending orders found!")
     else:
@@ -455,7 +528,6 @@ elif menu == "Pending Report":
             if not order_pending_data.empty:
                 client = order_pending_data.iloc[0]['Client']
                 pending_qty = pd.to_numeric(order_pending_data['Total Qty'], errors='coerce').sum()
-                
                 dates = order_pending_data['Due Date'].dropna().unique()
                 if len(dates) > 0:
                     try:
@@ -473,28 +545,20 @@ elif menu == "Pending Report":
                 with st.expander(f"🔴 {order_id} | {client}  |  🎯 Target: {int(total_target)}  |  ⏳ Pending: {int(pending_qty)}  |  📅 Due: {earliest_due}"):
                     st.dataframe(order_pending_data[["Product Name", "Color", "Size Variant", "Current Stage", "Total Qty", "Due Date"]], use_container_width=True)
 
-# --- 6. HISTORY (WITH SEARCH) ---
+# --- 6. HISTORY ---
 elif menu == "History":
     st.header("📂 Order History")
-    
-    # --- SEARCH BAR ---
     search_query = st.text_input("🔍 Search History (Order ID or Client):", placeholder="Type to filter...")
-    
     if df.empty: st.info("No history.")
     else:
         unique_orders = df['Order ID'].dropna().unique()
         history_list = []
         for order_id in unique_orders:
-            # Filter logic inside loop or pre-filter
             order_data = df[df['Order ID'] == order_id]
             if order_data.empty: continue
-            
             client = order_data.iloc[0]['Client']
-            
-            # Apply Search Filter here
             if search_query:
-                if (search_query.lower() not in order_id.lower()) and (search_query.lower() not in client.lower()):
-                    continue
+                if (search_query.lower() not in order_id.lower()) and (search_query.lower() not in client.lower()): continue
             
             total_items = len(order_data)
             shipped = len(order_data[order_data['Current Stage'] == "8- Shipped"])
@@ -504,8 +568,7 @@ elif menu == "History":
             else: rank = 2; status_label = "⏳ IN PROGRESS"; status_color = "orange"
             history_list.append({"rank": rank, "id": order_id, "client": client, "label": status_label, "color": status_color, "data": order_data})
         
-        if not history_list:
-            st.warning("No orders match your search.")
+        if not history_list: st.warning("No orders match your search.")
         else:
             history_list.sort(key=lambda x: x["rank"])
             for item in history_list:
